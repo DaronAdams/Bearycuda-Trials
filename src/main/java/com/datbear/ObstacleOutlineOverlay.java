@@ -1,15 +1,12 @@
 package com.datbear;
 
-import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
-import java.awt.Polygon;
 
 import javax.inject.Inject;
 
 import net.runelite.api.Client;
 import net.runelite.api.coords.LocalPoint;
-import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPosition;
@@ -43,7 +40,7 @@ public class ObstacleOutlineOverlay extends Overlay {
     }
 
     private void highlightObstacleTiles(Graphics2D graphics) {
-        if (!config.showObstacleOutlines()) {
+        if (!config.showObstacleOutlines() || plugin.getIsInTrial() == 0) {
             return;
         }
 
@@ -52,9 +49,9 @@ public class ObstacleOutlineOverlay extends Overlay {
             return;
         }
 
-        Color obstacleColor = config.obstacleOutlineColor();
+        var obstacleColor = config.obstacleOutlineColor();
 
-        for (WorldPoint obstacleWorldPoint : obstacleWorldPoints) {
+        for (var obstacleWorldPoint : obstacleWorldPoints) {
             if (obstacleWorldPoint == null) {
                 continue;
             }
@@ -69,7 +66,7 @@ public class ObstacleOutlineOverlay extends Overlay {
                     continue;
                 }
 
-                Polygon polygon = Perspective.getCanvasTilePoly(client, localPoint);
+                var polygon = Perspective.getCanvasTilePoly(client, localPoint);
                 if (polygon != null) {
                     OverlayUtil.renderPolygon(graphics, polygon, obstacleColor);
                 }

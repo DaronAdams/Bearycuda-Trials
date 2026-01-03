@@ -31,10 +31,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.Model;
-import net.runelite.api.ObjectComposition;
 import net.runelite.api.Point;
-import net.runelite.api.Renderable;
-import net.runelite.api.Scene;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.ClientTick;
@@ -75,9 +72,13 @@ public class BearycudaTrialsPlugin extends Plugin {
     private BearycudaTrialsOverlay overlay;
 
     @Inject
+    private ObstacleOutlineOverlay obstacleOutlineOverlay;
+
+    @Inject
     private BoatPathOverlay boatPathOverlay;
 
-    private boolean boatPathOverlayAdded = false;
+    @Inject
+    private BoostOverlay boostOverlay;
 
     @Inject
     private BearycudaTrialsPanel panel;
@@ -107,7 +108,7 @@ public class BearycudaTrialsPlugin extends Plugin {
     private static final int WIND_MOTE_ACTIVE_SPRITE_ID = 7075;
 
     private List<String> FirstMenuEntries = new ArrayList<String>();
-    private List<String> DeprioritizeMenuEntriesDuringTrial = new ArrayList<String>();
+    private List<String> DeprioritizeMenuEntriesDuringTrial = new ArrayList<String>(List.of("release-mote", "open"));
     private List<String> RemoveMenuEntriesDuringTrial = new ArrayList<String>();
 
     @Getter(AccessLevel.PACKAGE)
@@ -139,8 +140,6 @@ public class BearycudaTrialsPlugin extends Plugin {
     @Getter(AccessLevel.PACKAGE)
     private GameObject sailGameObject = null;
 
-    @Getter(AccessLevel.PACKAGE)
-    private final Map<Integer, List<GameObject>> obstacleGameObjectsById = new HashMap<>();
     @Getter(AccessLevel.PACKAGE)
     private final Set<WorldPoint> obstacleWorldPoints = new HashSet<>();
 
@@ -206,9 +205,10 @@ public class BearycudaTrialsPlugin extends Plugin {
 
     @Override
     protected void startUp() {
-        //log.info("Bearycuda Trials Plugin started!");
         overlayManager.add(overlay);
-        refreshBoatPathOverlayState();
+        overlayManager.add(obstacleOutlineOverlay);
+        overlayManager.add(boatPathOverlay);
+        overlayManager.add(boostOverlay);
         overlayManager.add(panel);
 
         //menu entries
@@ -229,23 +229,11 @@ public class BearycudaTrialsPlugin extends Plugin {
     @Override
     protected void shutDown() {
         overlayManager.remove(overlay);
+        overlayManager.remove(obstacleOutlineOverlay);
         overlayManager.remove(boatPathOverlay);
-        boatPathOverlayAdded = false;
+        overlayManager.remove(boostOverlay);
         overlayManager.remove(panel);
         reset();
-        //log.info("BearycudaTrialsPlugin shutDown: panel removed and state reset.");
-    }
-
-    private void refreshBoatPathOverlayState() {
-        if (config.enableBoatPathDebug()) {
-            if (!boatPathOverlayAdded) {
-                overlayManager.add(boatPathOverlay);
-                boatPathOverlayAdded = true;
-            }
-        } else if (boatPathOverlayAdded) {
-            overlayManager.remove(boatPathOverlay);
-            boatPathOverlayAdded = false;
-        }
     }
 
     @Subscribe
@@ -264,8 +252,6 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (tick <= 0 || position == null) {
             return;
         }
-
-        //log.info("Client tick! {} {}", tick, position);
 
         if (BoatPathHelper.HasTickData(tick)) {
             //log.info("Adding visited point for tick {}: {}", tick, position);
@@ -293,7 +279,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (boatLocation == null)
             return;
 
-        TrialRoute active = getActiveTrialRoute();
+        var active = getActiveTrialRoute();
         if (active != null) {
             markNextWaypointVisited(boatLocation, active, VISIT_TOLERANCE);
         }
@@ -302,9 +288,12 @@ public class BearycudaTrialsPlugin extends Plugin {
     @Subscribe
     public void onVarbitChanged(VarbitChanged event) {
         if (event.getVarbitId() == VarbitID.SAILING_BOAT_SPAWNED_ANGLE) {
-            //log.info("[ANGLE VARBIT CHANGED] {}", event.getValue());
             boatSpawnedAngle = event.getValue();
             updateCurrentHeadingFromVarbit(boatSpawnedAngle);
+        }
+
+        if (event.getVarbitId() == VarbitID.SAILING_BT_IN_TRIAL) {
+            updateToadsThrown(currentTrial);
         }
 
         trackCratePickups(event);
@@ -312,12 +301,11 @@ public class BearycudaTrialsPlugin extends Plugin {
 
     private void updateCurrentHeadingFromVarbit(int value) {
         var ordinal = value / 128;
-        Directions[] directions = Directions.values();
+        var directions = Directions.values();
         if (ordinal < 0 || ordinal >= directions.length) {
             return;
         }
         var newDir = directions[ordinal];
-        //log.info("[UPDATE HEADING FROM VARBIT] {} = {}", value, newDir);
         currentHeadingDirection = newDir;
     }
 
@@ -333,6 +321,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (isToadFlag) {
             toadFlagsById.computeIfAbsent(id, k -> new ArrayList<>()).add(obj);
         }
+
         var isTrialBoat = TRIAL_BOAT_GAMEOBJECT_IDS.contains(id);
         if (isTrialBoat) {
             trialBoatsById.put(id, obj);
@@ -342,7 +331,6 @@ public class BearycudaTrialsPlugin extends Plugin {
 
         var isObstacle = ObstacleTracking.OBSTACLE_GAMEOBJECT_IDS.contains(id);
         if (isObstacle && config.showObstacleOutlines()) {
-            obstacleGameObjectsById.computeIfAbsent(id, k -> new ArrayList<>()).add(obj);
             // Add world points for all tiles covered by this obstacle's footprint
             try {
                 var worldView = client.getTopLevelWorldView();
@@ -351,9 +339,9 @@ public class BearycudaTrialsPlugin extends Plugin {
                     var min = obj.getSceneMinLocation();
                     var max = obj.getSceneMaxLocation();
                     if (min != null && max != null) {
-                        int plane = worldView.getPlane();
-                        for (int x = min.getX(); x <= max.getX(); x++) {
-                            for (int y = min.getY(); y <= max.getY(); y++) {
+                        var plane = worldView.getPlane();
+                        for (var x = min.getX(); x <= max.getX(); x++) {
+                            for (var y = min.getY(); y <= max.getY(); y++) {
                                 WorldPoint wp = WorldPoint.fromScene(worldView, x, y, plane);
                                 obstacleWorldPoints.add(wp);
                             }
@@ -371,10 +359,12 @@ public class BearycudaTrialsPlugin extends Plugin {
                 removeGameObjectFromScene(obj);
             }
         }
+
         var isSail = AllSails.GAMEOBJECT_IDS.contains(id);
         if (isSail) {
             sailGameObject = obj;
         }
+
         var renderable = obj.getRenderable();
         if (renderable != null) {
             if (renderable instanceof DynamicObject) {
@@ -399,13 +389,64 @@ public class BearycudaTrialsPlugin extends Plugin {
         var obj = event.getGameObject();
         if (obj == null)
             return;
+
         var id = obj.getId();
-        List<GameObject> cacheList = toadFlagsById.get(id);
-        if (cacheList != null) {
-            cacheList.removeIf(x -> x == null || x.getHash() == obj.getHash());
-            if (cacheList.isEmpty()) {
+
+        var flagList = toadFlagsById.get(id);
+        if (flagList != null) {
+            flagList.removeIf(x -> x == null || x == obj);
+            if (flagList.isEmpty()) {
                 toadFlagsById.remove(id);
             }
+        }
+
+        if (trialBoatsById.get(id) == obj) {
+            trialBoatsById.remove(id);
+        }
+
+        if (trialCratesById.get(id) == obj) {
+            trialCratesById.remove(id);
+        }
+
+        var boostList = trialBoostsById.get(id);
+        if (boostList != null) {
+            boostList.removeIf(x -> x == null || x == obj);
+            if (boostList.isEmpty()) {
+                trialBoostsById.remove(id);
+            }
+        }
+
+        if (sailGameObject == obj) {
+            sailGameObject = null;
+        }
+    }
+
+    @Subscribe
+    public void onWorldViewUnloaded(WorldViewUnloaded event) {
+        for (var toadFlagList : toadFlagsById.values()) {
+            toadFlagList.removeIf(obj -> event.getWorldView() == obj.getWorldView());
+        }
+        toadFlagsById.entrySet().removeIf(entry -> entry.getValue().isEmpty());
+
+        for (var boat : trialBoatsById.values()) {
+            if (event.getWorldView() == boat.getWorldView()) {
+                trialBoatsById.remove(boat.getId());
+            }
+        }
+
+        for (var crate : trialCratesById.values()) {
+            if (event.getWorldView() == crate.getWorldView()) {
+                trialCratesById.remove(crate.getId());
+            }
+        }
+
+        for (var boostList : trialBoostsById.values()) {
+            boostList.removeIf(obj -> event.getWorldView() == obj.getWorldView());
+        }
+        trialBoostsById.entrySet().removeIf(entry -> entry.getValue().isEmpty());
+
+        if (sailGameObject != null && event.getWorldView() == sailGameObject.getWorldView()) {
+            sailGameObject = null;
         }
     }
 
@@ -416,16 +457,6 @@ public class BearycudaTrialsPlugin extends Plugin {
             reset();
         } else if (event.getGameState() == GameState.LOGIN_SCREEN) {
 
-        }
-    }
-
-    @Subscribe
-    public void onWorldViewUnloaded(WorldViewUnloaded event) {
-        for (var boat : trialBoatsById.values()) {
-            if (event.getWorldView() == boat.getWorldView()) {
-                //log.info("Removing trial boat gameobject id {} at {} due to world view unload", boat.getId(), boat.getWorldLocation());
-                trialBoatsById.remove(boat.getId());
-            }
         }
     }
 
@@ -519,7 +550,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (event == null) {
             return;
         }
-        // Only react to our plugin's config group
+
         if (!event.getGroup().equals("bearycudaTrials")) {
             return;
         }
@@ -563,19 +594,15 @@ public class BearycudaTrialsPlugin extends Plugin {
                 DeprioritizeMenuEntriesDuringTrial.remove(MENU_OPTION_UNSET);
             }
         }
-
-        refreshBoatPathOverlayState();
     }
 
     @Subscribe
     public void onChatMessage(ChatMessage e) {
         if (e.getType() != ChatMessageType.GAMEMESSAGE && e.getType() != ChatMessageType.SPAM) {
-            //log.info("[CHAT-IGNORED] {}", e.getMessage());
             return;
         }
 
-        String msg = e.getMessage().toLowerCase();
-        //log.info("[CHAT] {}", msg);
+        var msg = e.getMessage().toLowerCase();
         if (msg == null || msg.isEmpty()) {
             return;
         }
@@ -617,8 +644,7 @@ public class BearycudaTrialsPlugin extends Plugin {
     }
 
     private void updateCurrentTrial() {
-        TrialInfo newTrialInfo = TrialInfo.getCurrent(client);
-
+        var newTrialInfo = TrialInfo.getCurrent(client);
         // Allow a grace period of 18 game ticks where TrialInfo may be null (e.g., region/load transitions) before clearing currentTrial.
         // We only apply the null after 18 consecutive null ticks.
         if (newTrialInfo != null) {
@@ -703,9 +729,9 @@ public class BearycudaTrialsPlugin extends Plugin {
         }
         var toMove = new ArrayList<MenuEntry>();
         var entriesAsList = new ArrayList<>(Arrays.asList(entries));
-        var it = entriesAsList.iterator();
-        while (it.hasNext()) {
-            var menuEntry = it.next();
+        var iterator = entriesAsList.iterator();
+        while (iterator.hasNext()) {
+            var menuEntry = iterator.next();
             if (menuEntry == null) {
                 continue;
             }
@@ -715,7 +741,7 @@ public class BearycudaTrialsPlugin extends Plugin {
             }
             if (FirstMenuEntries.stream().anyMatch(x -> opt.toLowerCase().contains(x))) {
                 toMove.add(menuEntry);
-                it.remove();
+                iterator.remove();
             }
         }
         if (!toMove.isEmpty()) {
@@ -730,8 +756,8 @@ public class BearycudaTrialsPlugin extends Plugin {
             return entries;
         }
 
-        var p = client.getLocalPlayer();
-        if (p == null) {
+        var player = client.getLocalPlayer();
+        if (player == null) {
             return entries;
         }
 
@@ -779,16 +805,11 @@ public class BearycudaTrialsPlugin extends Plugin {
     }
 
     private void reset() {
-        // Clear runtime caches and tracked state on region change / shutdown
-        toadFlagsById.clear();
-        trialCratesById.clear();
-        trialBoostsById.clear();
-        sailGameObject = null;
         requestedHeadingDirection = currentHeadingDirection;
     }
 
     private void updateToadsThrown(TrialInfo newTrialInfo) {
-        if (currentTrial == null) {
+        if (currentTrial == null || isInTrial == 0 || newTrialInfo.CurrentTimeSeconds < currentTrial.CurrentTimeSeconds || newTrialInfo.CurrentTimeSeconds == 0) {
             toadsThrown = 0;
             return;
         }
@@ -801,15 +822,15 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (player == null || route == null || route.Points == null || route.Points.isEmpty()) {
             return;
         }
-        int nextIdx = lastVisitedIndex + 1;
+        var nextIdx = lastVisitedIndex + 1;
         if (nextIdx >= route.Points.size()) {
             return; // finished route
         }
-        WorldPoint target = route.Points.get(nextIdx);
+        var target = route.Points.get(nextIdx);
         if (target == null) {
             return;
         }
-        double dist = Math.hypot(player.getX() - target.getX(), player.getY() - target.getY());
+        var dist = Math.hypot(player.getX() - target.getX(), player.getY() - target.getY());
         if (dist <= tolerance) {
             lastVisitedIndex = nextIdx;
             //log.info("Visited waypoint {} / {} for route {}", lastVisitedIndex, route.Points.size() - 1, route.Rank);
@@ -820,16 +841,16 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (route == null || route.Points == null || route.Points.isEmpty() || limit <= 0) {
             return Collections.emptyList();
         }
-        int start = Math.max(0, lastVisitedIndex);
+        var start = Math.max(0, lastVisitedIndex);
         if (start >= route.Points.size()) {
             return Collections.emptyList();
         }
-        List<Integer> out = new ArrayList<>(limit);
+        var out = new ArrayList<Integer>(limit);
         var nextPortal = route.PortalDirections.stream()
                 .filter(x -> x.Index >= lastVisitedIndex)
                 .min((a, b) -> Integer.compare(a.Index, b.Index))
                 .orElse(null);
-        for (int i = start; i < route.Points.size() && out.size() < limit; i++) {
+        for (var i = start; i < route.Points.size() && out.size() < limit; i++) {
             if (nextPortal != null && i > nextPortal.Index) {
                 break;
             }
@@ -849,8 +870,8 @@ public class BearycudaTrialsPlugin extends Plugin {
         }
 
         List<WorldPoint> out = new ArrayList<>();
-        for (int idx : nextIdx) {
-            WorldPoint real = route.Points.get(idx);
+        for (var idx : nextIdx) {
+            var real = route.Points.get(idx);
             out.add(real);
         }
         return out;
@@ -870,7 +891,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (ids == null || ids.isEmpty()) {
             return out;
         }
-        for (int id : ids) {
+        for (var id : ids) {
             var list = toadFlagsById.get(id);
             if (list != null && !list.isEmpty()) {
                 out.addAll(list);
@@ -883,7 +904,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (currentTrial == null)
             return null;
 
-        for (TrialRoute route : TrialRoute.AllTrialRoutes) {
+        for (var route : TrialRoute.AllTrialRoutes) {
             if (route == null) {
                 continue;
             }
@@ -938,7 +959,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (nextToadIdx >= 0 && nextToadIdx < route.ToadOrder.size()) {
             var nextToadColor = route.ToadOrder.get(nextToadIdx);
             var nextToadGameObject = ToadFlagGameObject.getByColor(nextToadColor);
-            List<GameObject> cached = getToadFlagGameObjectsForIds(nextToadGameObject.GameObjectIds);
+            var cached = getToadFlagGameObjectsForIds(nextToadGameObject.GameObjectIds);
             if (!cached.isEmpty()) {
                 return cached;
             }
@@ -978,7 +999,6 @@ public class BearycudaTrialsPlugin extends Plugin {
         if (event.getMenuAction() != MenuAction.SET_HEADING) {
             return;
         }
-        //log.info("[SET HEADING] {}", event);
         requestedHeadingDirection = Directions.values()[event.getId()];
     }
 
@@ -996,13 +1016,13 @@ public class BearycudaTrialsPlugin extends Plugin {
             return;
         }
 
-        Directions[] all = Directions.values();
-        int n = all.length;
-        int currentIndex = currentHeadingDirection.ordinal();
-        int targetIndex = requestedHeadingDirection.ordinal();
+        var all = Directions.values();
+        var n = all.length;
+        var currentIndex = currentHeadingDirection.ordinal();
+        var targetIndex = requestedHeadingDirection.ordinal();
 
-        int forwardSteps = (targetIndex - currentIndex + n) % n;
-        int backwardSteps = (currentIndex - targetIndex + n) % n;
+        var forwardSteps = (targetIndex - currentIndex + n) % n;
+        var backwardSteps = (currentIndex - targetIndex + n) % n;
 
         if (forwardSteps == 0) {
             return;
@@ -1023,7 +1043,6 @@ public class BearycudaTrialsPlugin extends Plugin {
                 .filter(e -> e.getOption().equals("Set heading"))
                 .findFirst().orElse(null);
         if (headingEntry != null) {
-            //log.info("[SET HEADING HOVER] {}", headingEntry);
             hoveredHeadingDirection = Directions.values()[headingEntry.getIdentifier()];
         }
     }
@@ -1043,13 +1062,18 @@ public class BearycudaTrialsPlugin extends Plugin {
 
     private void removeGameObjectFromScene(GameObject gameObject) {
         if (gameObject != null) {
-            Renderable renderable = gameObject == null ? null : gameObject.getRenderable();
+            var renderable = gameObject == null ? null : gameObject.getRenderable();
             if (renderable != null) {
-                Model model = renderable instanceof Model ? (Model) renderable : renderable.getModel();
+                var model = renderable instanceof Model ? (Model) renderable : renderable.getModel();
                 if (model != null) {
-                    Scene scene = client.getTopLevelWorldView().getScene();
+                    var scene = client.getTopLevelWorldView().getScene();
                     if (scene != null) {
                         scene.removeGameObject(gameObject);
+                    }
+                    var playerWv = client.getLocalPlayer().getWorldView();
+                    var playerScene = playerWv != null ? playerWv.getScene() : null;
+                    if (playerScene != null) {
+                        playerScene.removeGameObject(gameObject);
                     }
                 }
             }
@@ -1072,10 +1096,10 @@ public class BearycudaTrialsPlugin extends Plugin {
             return;
         }
 
-        Widget[] facilityChildren = widget.getChildren();
+        var facilityChildren = widget.getChildren();
         Widget button = null;
         if (facilityChildren != null) {
-            for (Widget childWidget : facilityChildren) {
+            for (var childWidget : facilityChildren) {
                 if (childWidget != null && (childWidget.getSpriteId() == WIND_MOTE_INACTIVE_SPRITE_ID || childWidget.getSpriteId() == WIND_MOTE_ACTIVE_SPRITE_ID)) {
                     button = childWidget;
                     break;
@@ -1083,7 +1107,6 @@ public class BearycudaTrialsPlugin extends Plugin {
             }
         }
         if (button != null) {
-            //log.info("updateWindMoteButtonWidget: found wind mote button widget");
             if (windMoteButtonWidget == null) {
                 windMoteButtonWidget = button;
             }
@@ -1126,7 +1149,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         }
 
         GameObject closest = null;
-        double closestDist = Double.MAX_VALUE;
+        var closestDist = Double.MAX_VALUE;
 
         var player = client.getLocalPlayer();
         if (player == null) {
@@ -1143,7 +1166,7 @@ public class BearycudaTrialsPlugin extends Plugin {
                 continue;
             }
             var cratePoint = crate.getWorldLocation();
-            double dist = playerPoint.distanceTo(cratePoint);
+            var dist = playerPoint.distanceTo(cratePoint);
             if (dist < closestDist) {
                 closestDist = dist;
                 closest = crate;
@@ -1153,38 +1176,36 @@ public class BearycudaTrialsPlugin extends Plugin {
     }
 
     private void logCrateAndBoostSpawns(GameObjectSpawned event) {
-        GameObject gameObject = event.getGameObject();
+        var gameObject = event.getGameObject();
         if (gameObject == null) {
             return;
         }
 
-        Renderable renderable = gameObject.getRenderable();
+        var renderable = gameObject.getRenderable();
         if (!(renderable instanceof net.runelite.api.DynamicObject)) {
             return; // not an animating dynamic object
         }
 
-        net.runelite.api.DynamicObject dyn = (net.runelite.api.DynamicObject) renderable;
-        net.runelite.api.Animation anim = dyn.getAnimation();
+        var dyn = (net.runelite.api.DynamicObject) renderable;
+        var anim = dyn.getAnimation();
         if (anim == null) {
             return;
         }
 
-        final int animId = anim.getId();
-        final boolean isCrateAnim = TRIAL_CRATE_ANIMS.contains(animId);
-        final boolean isSpeedAnim = SPEED_BOOST_ANIMS.contains(animId);
+        final var animId = anim.getId();
+        final var isCrateAnim = TRIAL_CRATE_ANIMS.contains(animId);
+        final var isSpeedAnim = SPEED_BOOST_ANIMS.contains(animId);
 
         if (!isCrateAnim && !isSpeedAnim) {
             return; // ignore unrelated animations
         }
 
-        WorldPoint wp = gameObject.getWorldLocation();
+        var wp = gameObject.getWorldLocation();
 
-        ObjectComposition objectComposition = client.getObjectDefinition(gameObject.getId());
+        var objectComposition = client.getObjectDefinition(gameObject.getId());
         if (objectComposition.getImpostorIds() == null) {
-            String name = objectComposition.getName();
-            //log.info("Gameobject (id={}) spawned with name='{}'", gameObject.getId(), name);
+            var name = objectComposition.getName();
             if (Strings.isNullOrEmpty(name) || name.equals("null")) {
-                // name has changed?
                 return;
             }
         }
@@ -1192,7 +1213,7 @@ public class BearycudaTrialsPlugin extends Plugin {
         var minLocation = gameObject.getSceneMinLocation();
         var poly = gameObject.getCanvasTilePoly();
 
-        String type = isCrateAnim ? "CRATE" : "SPEED BOOST";
+        var type = isCrateAnim ? "CRATE" : "SPEED BOOST";
         if (wp != null) {
             if (isCrateAnim) {
                 log.info("[SPAWN] {} -> GameObject id={} world={} (hash={}) minLocation={} poly={}", type, animId, gameObject.getId(), wp, gameObject.getHash(), minLocation, poly);

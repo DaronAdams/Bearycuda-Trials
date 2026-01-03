@@ -5,22 +5,16 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Polygon;
-import java.awt.Rectangle;
-import java.awt.Stroke;
 import java.util.Set;
 
 import com.datbear.BearycudaTrialsConfig;
 import com.datbear.BearycudaTrialsPlugin;
-import com.datbear.data.Directions;
-import com.datbear.debug.BoatPathHelper;
-import com.datbear.debug.TickMovementData;
 import com.datbear.overlay.WorldPerspective;
 import com.google.inject.Inject;
 
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.Perspective;
-import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
@@ -55,29 +49,15 @@ public class BoatPathOverlay extends Overlay {
 
     @Override
     public Dimension render(Graphics2D graphics) {
-        if (client == null || graphics == null) {
+        if (client == null || graphics == null || !config.enableBoatPathDebug()) {
             return null;
         }
 
-        if (plugin.getBoardedBoat() == 0) {
-            return null;
-        }
-        if (!config.enableBoatPathDebug()) {
-            return null;
-        }
-
-        if (client.getGameState() != GameState.LOGGED_IN) {
-            return null;
-        }
-
-        if (client.getTickCount() <= 0) {
+        if (client.getGameState() != GameState.LOGGED_IN || client.getTickCount() <= 0 || plugin.getBoardedBoat() == 0 || TickColors.size() == 0) {
             return null;
         }
 
         var tickColorOrder = TickColors.toArray(new Color[0]);
-        if (tickColorOrder.length == 0) {
-            return null;
-        }
 
         var currentTick = client.getTickCount();
         var ticksToRender = 6;
@@ -111,7 +91,7 @@ public class BoatPathOverlay extends Overlay {
         graphics.setStroke(new BasicStroke(2f));
         graphics.setColor(outlineColor);
 
-        for (WorldPoint visitedPoint : tickData.PointsVisited) {
+        for (var visitedPoint : tickData.PointsVisited) {
             if (visitedPoint == null) {
                 continue;
             }
@@ -165,7 +145,7 @@ public class BoatPathOverlay extends Overlay {
             return null;
         }
 
-        for (LocalPoint localPoint : localPoints) {
+        for (var localPoint : localPoints) {
             if (localPoint == null) {
                 continue;
             }
@@ -183,14 +163,14 @@ public class BoatPathOverlay extends Overlay {
             return polygon;
         }
 
-        double centerX = 0;
-        double centerY = 0;
-        int nPoints = polygon.npoints;
+        var centerX = 0;
+        var centerY = 0;
+        var nPoints = polygon.npoints;
         if (nPoints == 0) {
             return polygon;
         }
 
-        for (int i = 0; i < nPoints; i++) {
+        for (var i = 0; i < nPoints; i++) {
             centerX += polygon.xpoints[i];
             centerY += polygon.ypoints[i];
         }
@@ -198,16 +178,16 @@ public class BoatPathOverlay extends Overlay {
         centerY /= nPoints;
 
         var insetPoly = new Polygon();
-        for (int i = 0; i < nPoints; i++) {
-            double dx = polygon.xpoints[i] - centerX;
-            double dy = polygon.ypoints[i] - centerY;
-            double distance = Math.hypot(dx, dy);
+        for (var i = 0; i < nPoints; i++) {
+            var dx = polygon.xpoints[i] - centerX;
+            var dy = polygon.ypoints[i] - centerY;
+            var distance = Math.hypot(dx, dy);
             if (distance == 0) {
                 continue;
             }
-            double scale = Math.max((distance - insetPixels) / distance, 0);
-            int newX = (int) Math.round(centerX + dx * scale);
-            int newY = (int) Math.round(centerY + dy * scale);
+            var scale = Math.max((distance - insetPixels) / distance, 0);
+            var newX = (int) Math.round(centerX + dx * scale);
+            var newY = (int) Math.round(centerY + dy * scale);
             insetPoly.addPoint(newX, newY);
         }
 

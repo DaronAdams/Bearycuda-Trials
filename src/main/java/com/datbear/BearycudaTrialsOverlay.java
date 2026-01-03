@@ -81,7 +81,7 @@ public class BearycudaTrialsOverlay extends Overlay {
         renderPortalArrows(graphics, route, playerLocation);
         highlightToadFlags(graphics, boatLocation);
         highlightCrates(graphics);
-        highlightBoosts(graphics);
+
         renderWindMote(graphics);
         renderWindMoteCooldown(graphics);
         highlightTrialBoat(graphics, boatLocation);
@@ -275,22 +275,6 @@ public class BearycudaTrialsOverlay extends Overlay {
         Color crateColor = config.crateHighlightColor();
         for (var crate : crates.values()) {
             modelOutlineRenderer.drawOutline(crate, 2, crateColor, 2);
-        }
-    }
-
-    private void highlightBoosts(Graphics2D graphics) {
-        if (!config.showBoostHighlights()) {
-            return;
-        }
-        var boosts = plugin.getTrialBoostsById();
-        Color boostColor = config.boostHighlightColor();
-        for (var boostList : boosts.values()) {
-            for (var boost : boostList) {
-                var poly = boost.getCanvasTilePoly();
-                if (poly != null) {
-                    OverlayUtil.renderPolygon(graphics, poly, boostColor);
-                }
-            }
         }
     }
 
